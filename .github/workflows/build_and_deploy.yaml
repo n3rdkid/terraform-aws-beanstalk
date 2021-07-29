@@ -1,0 +1,90 @@
+name: Build and Deploy Workflow
+on:
+  push:
+    branches:
+      - "develop"
+      - "main"
+
+jobs:
+  setup_environment:
+    runs-on: ubuntu-latest
+    outputs:
+      env_name: ${{ steps.get_env.outputs.env }}
+    steps:
+    - id: get_env
+      run: |
+        if grep -q "refs/tags/v" <<< ${{github.ref}}; then
+          echo "::set-output name=env::PROD"
+        else
+          echo "::set-output name=env::DEV"
+        fi
+    - id: print_env
+      name: Print environment
+      run: echo  "Environment :- ${{ steps.get_env.outputs.env }}"
+
+  build_and_deploy:
+    name: Build and deploy the Consumer Package
+    runs-on: ubuntu-latest
+    needs: setup_environment
+    environment: ${{needs.setup_environment.outputs.env_name}}  
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+          # Number of commits to fetch. 0 indicates all history for all branches and tags.
+          fetch-depth: 0
+      
+      - name: Use Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: 14.17.3
+
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "::set-output name=dir::$(yarn cache dir)"
+
+      - name: Check dependencies in cache 
+        id: yarn-cache 
+        uses: actions/cache@v2
+        with:
+          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+      - name: Initializing dependencies
+        if: steps.npm-cache.outputs.cache-hit != 'true'
+        run:  yarn install
+
+      - name: Creating & Initializing env variables 
+        run: |
+          echo "ENV_VARIABLES" > .env
+      - name: Build the package
+        run: |
+         npm run build
+        
+      - name: Generate deployment zip
+        run: zip -r deploy.zip . -x 'node_modules/*' -x '*.git*'
+      
+      - name: Get timestamp
+        uses: gerred/actions/current-time@master
+        id: current-time
+
+      - name: Run string replace
+        uses: frabert/replace-string-action@master
+        id: format-time
+        with:
+          pattern: '[:\.]+'
+          string: "${{ steps.current-time.outputs.time }}"
+          replace-with: '-'
+          flags: 'g'
+
+      - name: Deploy to EB
+        uses: einaregilsson/beanstalk-deploy@v16
+        with:
+          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+          application_name: ${{ secrets.APPLICATION_NAME }}
+          environment_name: ${{ secrets.BEANSTALK_ENVIRONMENT_NAME }}
+          version_label: "test-one-${{ steps.format-time.outputs.replaced }}"
+          region: ${{ secrets.REGION }}
+          deployment_package: deploy.zip
