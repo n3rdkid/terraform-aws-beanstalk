@@ -1,0 +1,4 @@
+**/variables.tf
+.aws
+.terraform.*
+.terraform
